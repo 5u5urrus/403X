@@ -1,7 +1,7 @@
 # 403X
 
 <p align="center">
-  <img src="403x.png" width="100%" alt="403X Banner">
+  <img src="./403x.png" width="100%" alt="403X Banner">
 </p>
 
 **403X**

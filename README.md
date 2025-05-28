@@ -29,7 +29,7 @@
 1. **Clone**
 
    ```bash
-   git clone https://github.com/YourUserName/403x.git
+   git clone https://github.com/5u5urrus/403x.git
    cd 403x
    ```
 2. **Install Python 3.7+ dependencies**
@@ -227,10 +227,10 @@ If a file is **missing**, 403X automatically falls back to its built-in mini lis
 3. New bypass ideas? Add a dedicated function + flag.
 
 ```bash
-git clone https://github.com/YourUserName/403x.git
+git clone https://github.com/5u5urrus/403x.git
 cd 403x
 git checkout -b feature-awesome-bypass
-# hack hack hack
+# test test test
 git commit -m "feat: add awesome bypass"
 git push origin feature-awesome-bypass
 ```
@@ -245,7 +245,7 @@ Released under the [MIT License](https://choosealicense.com/licenses/mit/).
 
 ## Author
 
-Created by [Vahe Demirkhanyan](mailto:vdemirkhanyan@yahoo.ca)
+Created by [Vahe Demirkhanyan](mailto:vahe@hackvector.io)
 
 <p align="center">
   <strong>Knock politely, then bash the door down – with 403X.</strong>

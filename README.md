@@ -1,7 +1,7 @@
 # 403X
 
 <p align="center">
-  <img src="403x.png" width="70%" alt="403X Banner">
+  <img src="403x.png" width="100%" alt="403X Banner">
 </p>
 
 **403X** is an all-in-one 401/403 bypass arsenal that chains 20 + evasion modules, runs them concurrently, and lets you fine-tune every test from headers to hex-encoded path tricks. Built for pentesters, bug-bounty hunters, red-teamers, and anyone who refuses to take “Forbidden” for an answer.

